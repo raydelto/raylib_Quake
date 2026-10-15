@@ -167,3 +167,35 @@ timedemo frame counts are unchanged: demo1 969, demo2 985, demo3 1090
 (about 520–590 FPS there, against about 2800–3000 for `quake-null`, which
 neither converts nor presents frames). FPS under Xvfb says nothing about a
 real display. Audible output is still null until QUAK-6.
+
+## macOS harness (`tools/verify_macos.py`)
+
+`verify.py` stays Linux/Xvfb only. On macOS use the sibling script; it runs the real
+window (no Xvfb), uses `screencapture -l <windowid>` for window-only PNGs, and builds two
+tiny Swift helpers on first use into the evidence directory (`macos_windows.swift`: window
+ids by PID via CGWindowList; `macos_input.swift`: key/mouse injection). Needs only Xcode
+command line tools and `tools/fetch_shareware.sh` data.
+
+```sh
+tools/verify_macos.sh launch|demo|timedemo|soak  build/quake [engine args]
+tools/verify_macos.sh play        build/quake    # E1M1 move/strafe/turn/mouse-look/fire/door
+tools/verify_macos.sh audio       build/quake    # --rates 11025,22050,44100, WAV capture analysis
+tools/verify_macos.sh fullscreen  build/quake    # Alt+Enter and back
+tools/verify_macos.sh quit        build/quake    # Cmd+Q must exit 0
+tools/verify_macos.sh frames      build/quake -width 320 -height 200   # fixed-frame PCX hashes
+tools/verify_macos.sh timedemo --headless build/quake-null
+python3 tools/compare_frames.py EVIDENCE_A EVIDENCE_B   # per-frame differing pixels
+```
+
+Permissions to grant to the terminal/agent (System Settings > Privacy & Security): **Accessibility**
+for `play audio fullscreen quit` (synthetic input; checked up front with a clear error), and
+**Screen Recording** for readable window screenshots (without it `screencapture` returns blank or
+wallpaper-only images: inspect the PNGs). `launch demo timedemo soak frames --headless` need neither.
+
+Notes: Ctrl/Alt/Cmd are sent as real modifier (flagsChanged) events, since raylib polls modifier
+state; `play` reads the player with an `edict 1` binding (F5) from `qconsole.log`, so movement is
+asserted on origin/angles, not just pixels; `audio` analyses the driver's own `-sndcapture` WAV
+(proves the mixer produced non-silent PCM at that rate, not that anyone heard it); `frames` uses
+`host_framerate 0.02` + `screenshot` so the 8-bit frame is comparable across builds/arches (run-to-run
+noise on one build is a few hundred pixels of particles; compare the same driver only). Run a
+Rosetta build with `-noudp` if `gethostbyname` of the machine name fails there (see QUAK-21).
