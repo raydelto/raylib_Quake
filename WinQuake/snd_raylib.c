@@ -79,7 +79,7 @@ extern char *Cvar_VariableString (char *var_name);
 #define DMA_BUFFER_BYTES	(DMA_BUFFER_SAMPLES * (int)sizeof(short))
 #define DMA_FRAME_MASK		(DMA_BUFFER_FRAMES - 1)
 
-static int				snd_inited = 0;
+static atomic_int		snd_inited;		// also read by the audio thread
 static short			*dma_buffer = NULL;
 static AudioStream		audio_stream;
 
@@ -89,9 +89,11 @@ static atomic_uint_fast64_t	painted_frames_count;
 static struct timespec		start_time;
 
 // Underrun and diagnostic counters
-static uint32_t			underrun_count = 0;
-static uint64_t			underrun_frames = 0;
-static int				in_underrun = 0;
+// Written by the audio thread, read by the main thread (snd_stats, shutdown),
+// so atomic: plain loads would be a data race, and arm64 won't hide it.
+static atomic_uint_fast32_t	underrun_count;
+static atomic_uint_fast64_t	underrun_frames;
+static int				in_underrun = 0;		// audio thread only
 
 // Debug WAV capture
 static pthread_mutex_t	capture_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -222,8 +224,9 @@ static void Snd_Stats_f(void)
 		(double)consumed / shm->speed);
 	Con_Printf("  Mix lead: %.1f ms (%llu frames ahead)\n", lead_ms,
 		(unsigned long long)(painted > consumed ? painted - consumed : 0));
-	Con_Printf("  Underrun count: %u (%llu frames dropped)\n", underrun_count,
-		(unsigned long long)underrun_frames);
+	Con_Printf("  Underrun count: %u (%llu frames dropped)\n",
+		(unsigned)atomic_load_explicit(&underrun_count, memory_order_relaxed),
+		(unsigned long long)atomic_load_explicit(&underrun_frames, memory_order_relaxed));
 	if (capture_fp)
 		Con_Printf("  WAV capture: active (%u bytes written)\n", capture_data_bytes);
 	else
@@ -254,6 +257,7 @@ static void RaylibAudioCallback(void *buffer, unsigned int frames)
 	uint64_t painted = atomic_load_explicit(&painted_frames_count, memory_order_acquire);
 
 	int underrun_occurred = 0;
+	uint64_t missed = 0;
 
 	for (unsigned int i = 0; i < frames; i++)
 	{
@@ -273,16 +277,17 @@ static void RaylibAudioCallback(void *buffer, unsigned int frames)
 			// Underrun: output silence
 			out[i * 2]     = 0;
 			out[i * 2 + 1] = 0;
-			underrun_frames++;
+			missed++;
 			underrun_occurred = 1;
 		}
 	}
 
 	if (underrun_occurred)
 	{
+		atomic_fetch_add_explicit(&underrun_frames, missed, memory_order_relaxed);
 		if (!in_underrun)
 		{
-			underrun_count++;
+			atomic_fetch_add_explicit(&underrun_count, 1, memory_order_relaxed);
 			in_underrun = 1;
 		}
 	}
@@ -318,8 +323,8 @@ int SNDDMA_Init(void)
 	snd_inited = 0;
 	atomic_store_explicit(&consumed_frames, 0, memory_order_relaxed);
 	atomic_store_explicit(&painted_frames_count, 0, memory_order_relaxed);
-	underrun_count = 0;
-	underrun_frames = 0;
+	atomic_store_explicit(&underrun_count, 0, memory_order_relaxed);
+	atomic_store_explicit(&underrun_frames, 0, memory_order_relaxed);
 	in_underrun = 0;
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
 
@@ -507,5 +512,7 @@ void SNDDMA_Shutdown(void)
 
 	uint64_t consumed = atomic_load_explicit(&consumed_frames, memory_order_relaxed);
 	Con_Printf("raylib audio driver shutdown: %llu frames consumed, %u underruns (%llu frames)\n",
-		(unsigned long long)consumed, underrun_count, (unsigned long long)underrun_frames);
+		(unsigned long long)consumed,
+		(unsigned)atomic_load_explicit(&underrun_count, memory_order_relaxed),
+		(unsigned long long)atomic_load_explicit(&underrun_frames, memory_order_relaxed));
 }
