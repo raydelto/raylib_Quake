@@ -340,10 +340,16 @@ async function phone(key, device) {
     await sleep(200);
     still = Math.max(still, diff(a, await canvasSig(p)));
   }
+  // The arc lasts about 0.6 s and a screenshot can take longer than that
+  // under load: hold JUMP and keep sampling (single shots, blank ones
+  // skipped) for a while, so samples land inside the arc.
   const jid = await f.start(...Object.values(await center(p, '#tjump')));
   let jump = 0;
-  for (let i = 0; i < 3; i++)
-    jump = Math.max(jump, diff(a, await canvasSig(p)));
+  for (const end = Date.now() + 900; Date.now() < end;) {
+    const sig = await canvasShot(p);
+    if (sig.reduce((x, y) => x + y, 0) / sig.length > 8)
+      jump = Math.max(jump, diff(a, sig));
+  }
   await f.end(jid);
   check(tag('JUMP moves the view'), jump > 2 * still + 1,
         `still ${still.toFixed(2)}, jump ${jump.toFixed(2)}`);
