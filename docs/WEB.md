@@ -35,6 +35,41 @@ missing. The PAK is only ever in the build directory, never in git.
 
 Serve it over HTTP(S); `file://` URLs cannot load the `.data`/`.wasm`.
 
+## Two renderers: `?renderer=gl`
+
+The build also makes `quake-gl.js` / `quake-gl.wasm`: id's GLQuake renderer
+on WebGL 2 through `gl_raylib.c` (docs/GLQUAKE.md). The page loads it
+instead of `quake.js` when the URL has `?renderer=gl`; the software
+renderer stays the default. Everything else is shared: the page, touch
+controls, `?args=`, IndexedDB saves and `config.cfg`, the canvas sizing.
+
+- raylib is compiled a second time for OpenGL ES 3 (`raylib_es3` in
+  `web/web.cmake`, linked with `-sMIN_WEBGL_VERSION=2
+  -sMAX_WEBGL_VERSION=2 -sGL_ENABLE_GET_PROC_ADDRESS`); `quake` keeps
+  raylib's ES 2 / WebGL 1.
+- `quake-gl.data` is the same package as `quake.data` (the build checks
+  that they are identical) and the page's `locateFile` fetches `quake.data`
+  for both, so the PAK is downloaded once. A deployment needs
+  `quake-gl.js` and `quake-gl.wasm` next to the rest; `quake-gl.data` can
+  be left out.
+- Without WebGL 2 the page says so instead of loading the GL build.
+- GL draws at the canvas's full size in device pixels every frame
+  (`vid_maxpixels` and `-width`/`-height` are for the software renderer
+  only); the 2D layer is scaled by a whole number (`scr_scale`).
+- Emscripten insists on a `{{{ SCRIPT }}}` in the shell; it is kept inert
+  in a `<template>` and the page adds the engine's script tag itself.
+
+`scripts/web_renderers.mjs` captures both renderers at the same `map start`
+spawn (and netquake.io with `--netquake`) and runs `timedemo demo1` in
+each; `--gpu swiftshader|intel|nvidia` picks Chromium's WebGL backend.
+Measured for QUAK-45 (Chromium 151, 1920x1080, rAF limit off):
+
+| WebGL backend | software fps | GL fps |
+|---|---|---|
+| NVIDIA RTX 3050 Laptop (ANGLE/GL) | 148.8 | 1494.4 |
+| Intel UHD (TGL GT1, ANGLE/GL) | 140.4 | 822.5 |
+| SwiftShader (CPU) | 65.8 | 16.8 |
+
 ## How it differs from the desktop build
 
 - **Frame loop:** `main` runs `Host_Init` and then hands
@@ -151,7 +186,7 @@ Pixel 7 and iPhone 14 landscape emulation with real touch events through
 CDP `Input.dispatchTouchEvent`, plus a desktop run):
 
 ```sh
-node scripts/web_touch.mjs build-web web-touch [--only pixel7|iphone14|desktop]
+node scripts/web_touch.mjs build-web web-touch [--only pixel7|iphone14|desktop] [--renderer gl]
 # PLAYWRIGHT=/path/to/node_modules/playwright/index.mjs if not the default
 ```
 

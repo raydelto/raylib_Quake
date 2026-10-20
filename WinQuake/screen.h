@@ -38,6 +38,7 @@ int SCR_ModalMessage (char *text);
 // screen of vid.conwidth x vid.conheight pixels, each drawn as a
 // scr_2dscale x scr_2dscale block in vid.buffer
 extern	int			scr_2dscale;
+extern	cvar_t		scr_scale;		// the 2D scale; 0 picks it from the screen size
 void SCR_Update2DScale (void);
 
 extern	float		scr_con_current;	// in 2D (vid.conheight) lines

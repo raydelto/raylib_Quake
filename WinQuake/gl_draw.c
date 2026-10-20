@@ -51,7 +51,11 @@ int		gl_lightmap_format = 4;
 int		gl_solid_format = 3;
 int		gl_alpha_format = 4;
 
+#ifdef GLQUAKE_RAYLIB
+int		gl_filter_min = GL_LINEAR_MIPMAP_LINEAR;	// trilinear
+#else
 int		gl_filter_min = GL_LINEAR_MIPMAP_NEAREST;
+#endif
 int		gl_filter_max = GL_LINEAR;
 
 
@@ -1082,8 +1086,16 @@ done: ;
 	}
 	else
 	{
+#ifdef GLQUAKE_RAYLIB
+		// The 2D pictures (status bar, menus, console): drawn at a whole
+		// number scale (vid_glraylib.c), so they keep sharp pixels, as the
+		// software renderer draws them.
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+#else
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_max);
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+#endif
 	}
 }
 
@@ -1173,8 +1185,16 @@ done: ;
 	}
 	else
 	{
+#ifdef GLQUAKE_RAYLIB
+		// The 2D pictures (status bar, menus, console): drawn at a whole
+		// number scale (vid_glraylib.c), so they keep sharp pixels, as the
+		// software renderer draws them.
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+#else
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_max);
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+#endif
 	}
 }
 

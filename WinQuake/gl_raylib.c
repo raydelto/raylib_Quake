@@ -28,8 +28,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //   orphaned when full and at the start of every frame.
 // - One shader does the fixed-function work GLQuake needs: modulate or
 //   replace texture env (or no texture), alpha test, and glDepthRange,
-//   which it applies to clip-space z.
+//   which it applies to clip-space z. It also has GL 1.3's GL_RGB_SCALE
+//   (in any env mode), which overbright models use.
 // - The matrix stacks are kept here; the shader gets projection*modelview.
+// - The frame is drawn into an offscreen framebuffer, which RGL_EndFrame
+//   copies to the window through a gamma curve: the brightness (gamma)
+//   applies to the finished picture, lighting included, as the software
+//   renderer's palette does, not to the textures alone as GLQuake did.
 // - Textures are kept by GLQuake's own numbers (it never calls
 //   glGenTextures) and mapped to rlgl texture ids. Data is converted to
 //   RGBA8, since luminance/intensity/alpha formats are gone from GL 3 core
@@ -114,6 +119,7 @@ typedef struct
 {
 	int		texture2d;
 	int		texmode;		// GL_MODULATE or GL_REPLACE
+	float	rgbscale;		// GL_RGB_SCALE: 1, 2 or 4
 	int		boundtex;
 	int		alphatest;
 	float	alpharef;		// GL_GREATER only, which is all GLQuake uses
@@ -145,9 +151,19 @@ static unsigned	vao, vbo;
 static int		streamused;		// vertices used in the stream buffer
 static unsigned	program;
 static int		loc_mvp, loc_depthrange, loc_texmode, loc_alpharef, loc_tex;
+static int		loc_rgbscale;
 
 static int		fbwidth, fbheight;
 static int		statdraws, statverts;
+
+// the offscreen frame (0 if it couldn't be made: then drawing goes
+// straight to the window and gamma is not applied)
+static unsigned	fbo, fbocolor, fbodepth;
+static int		fbowidth, fboheight;
+static unsigned	postprogram;
+static int		loc_postgamma, loc_posttex;
+static float	lastgamma = 1;
+static int		insideframe;	// between RGL_BeginFrame and RGL_EndFrame
 
 static unsigned char	clearcolor[4];
 
@@ -455,6 +471,7 @@ static void Flush (void)
 	rlSetUniform (loc_depthrange, depthrange, RL_SHADER_UNIFORM_VEC2, 1);
 	rlSetUniform (loc_texmode, &texmode, RL_SHADER_UNIFORM_INT, 1);
 	rlSetUniform (loc_alpharef, &alpharef, RL_SHADER_UNIFORM_FLOAT, 1);
+	rlSetUniform (loc_rgbscale, &state.rgbscale, RL_SHADER_UNIFORM_FLOAT, 1);
 	rlSetUniform (loc_tex, &zero, RL_SHADER_UNIFORM_INT, 1);
 
 	rlActiveTextureSlot (0);
@@ -700,6 +717,8 @@ void rglTexEnvf (GLenum target, GLenum pname, GLfloat param)
 	(void)target;
 	if (pname == GL_TEXTURE_ENV_MODE)
 		SETSTATE (texmode, (int)param);
+	else if (pname == GL_RGB_SCALE)
+		SETSTATE (rgbscale, param);
 }
 
 void rglViewport (GLint x, GLint y, GLsizei width, GLsizei height)
@@ -1061,10 +1080,25 @@ void rglReadPixels (GLint x, GLint y, GLsizei width, GLsizei height,
 	bytes = format == GL_RGBA ? 4 : 3;
 	memset (pixels, 0, (size_t)width * height * bytes);
 
-	// whole frame, top row first
+	// whole frame, top row first; the offscreen one gets the gamma curve
+	// the window shows it through
+	if (fbo)
+		rlEnableFramebuffer (fbo);
 	screen = rlReadScreenPixels (fbwidth, fbheight);
+	if (fbo && !insideframe)
+		rlDisableFramebuffer ();
 	if (!screen)
 		return;
+	if (fbo && lastgamma != 1)
+	{
+		unsigned char	curve[256];
+		int				i;
+
+		for (i = 0; i < 256; i++)
+			curve[i] = (unsigned char)(255 * pow (i / 255.0, lastgamma) + 0.5);
+		for (i = 0; i < fbwidth * fbheight * 4; i++)
+			screen[i] = curve[screen[i]];
+	}
 
 	// GL's rows go bottom up from y
 	for (row = 0; row < height; row++)
@@ -1120,6 +1154,7 @@ static const char fs_body[] =
 	"uniform sampler2D texture0;\n"
 	"uniform int texMode;\n"		// 0 no texture, 1 modulate, 2 replace
 	"uniform float alphaRef;\n"		// GL_GREATER; -1 is off
+	"uniform float rgbScale;\n"		// GL_RGB_SCALE
 	"out vec4 finalColor;\n"
 	"void main ()\n"
 	"{\n"
@@ -1131,13 +1166,98 @@ static const char fs_body[] =
 	"    }\n"
 	"    if (c.a <= alphaRef)\n"
 	"        discard;\n"
-	"    finalColor = c;\n"
+	"    finalColor = vec4 (c.rgb * rgbScale, c.a);\n"
 	"}\n";
+
+// The copy to the window: one triangle that covers it, no vertex data.
+static const char post_vs_body[] =
+	"out vec2 fragTexCoord;\n"
+	"void main ()\n"
+	"{\n"
+	"    vec2 p = vec2 (float ((gl_VertexID << 1) & 2), float (gl_VertexID & 2));\n"
+	"    fragTexCoord = p;\n"
+	"    gl_Position = vec4 (p * 2.0 - 1.0, 0.0, 1.0);\n"
+	"}\n";
+
+static const char post_fs_body[] =
+	"in vec2 fragTexCoord;\n"
+	"uniform sampler2D texture0;\n"
+	"uniform float gamma;\n"
+	"out vec4 finalColor;\n"
+	"void main ()\n"
+	"{\n"
+	"    vec3 c = texture (texture0, fragTexCoord).rgb;\n"
+	"    finalColor = vec4 (pow (c, vec3 (gamma)), 1.0);\n"
+	"}\n";
+
+static unsigned LoadProgram (const char *header, const char *vsbody,
+	const char *fsbody)
+{
+	char		*vs, *fs;
+	unsigned	id;
+
+	vs = malloc (strlen (header) + strlen (vsbody) + 1);
+	fs = malloc (strlen (header) + strlen (fsbody) + 1);
+	if (!vs || !fs)
+	{
+		free (vs);
+		free (fs);
+		return 0;
+	}
+	strcpy (vs, header);
+	strcat (vs, vsbody);
+	strcpy (fs, header);
+	strcat (fs, fsbody);
+	id = rlLoadShaderProgram (vs, fs);
+	free (vs);
+	free (fs);
+	return id;
+}
+
+static void FreeFrame (void)
+{
+	if (fbo)
+		rlUnloadFramebuffer (fbo);	// also deletes its attachments
+	fbo = fbocolor = fbodepth = 0;
+	fbowidth = fboheight = 0;
+}
+
+// (Re)makes the offscreen frame at width x height; 0 if it can't.
+static int MakeFrame (int width, int height)
+{
+	FreeFrame ();
+	fbo = rlLoadFramebuffer ();
+	if (!fbo)
+		return 0;
+	fbocolor = rlLoadTexture (NULL, width, height,
+		RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
+	fbodepth = rlLoadTextureDepth (width, height, true);
+	if (!fbocolor || !fbodepth)
+	{
+		FreeFrame ();
+		return 0;
+	}
+	rlTextureParameters (fbocolor, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST);
+	rlTextureParameters (fbocolor, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST);
+	rlTextureParameters (fbocolor, RL_TEXTURE_WRAP_S, RL_TEXTURE_WRAP_CLAMP);
+	rlTextureParameters (fbocolor, RL_TEXTURE_WRAP_T, RL_TEXTURE_WRAP_CLAMP);
+	rlFramebufferAttach (fbo, fbocolor, RL_ATTACHMENT_COLOR_CHANNEL0,
+		RL_ATTACHMENT_TEXTURE2D, 0);
+	rlFramebufferAttach (fbo, fbodepth, RL_ATTACHMENT_DEPTH,
+		RL_ATTACHMENT_RENDERBUFFER, 0);
+	if (!rlFramebufferComplete (fbo))
+	{
+		FreeFrame ();
+		return 0;
+	}
+	fbowidth = width;
+	fboheight = height;
+	return 1;
+}
 
 int RGL_Init (void)
 {
 	const char	*header;
-	char		*vs, *fs;
 	int			version;
 
 	version = rlGetVersion ();
@@ -1156,32 +1276,32 @@ int RGL_Init (void)
 	qglClear = (clear_t)rlGetProcAddress ("glClear");
 	qglGetString = (getstring_t)rlGetProcAddress ("glGetString");
 	qglBufferData = (bufferdata_t)rlGetProcAddress ("glBufferData");
-	if (!qglBufferData)
+	// All four are core OpenGL 3.3 / ES 3 (the browser build needs
+	// -sGL_ENABLE_GET_PROC_ADDRESS for them); without one the picture
+	// would be wrong, so don't start.
+	if (!qglDepthFunc || !qglClear || !qglGetString || !qglBufferData)
 	{
-		fprintf (stderr, "gl_raylib: no glBufferData\n");
+		fprintf (stderr, "gl_raylib: rlGetProcAddress has no%s%s%s%s\n",
+			qglDepthFunc ? "" : " glDepthFunc", qglClear ? "" : " glClear",
+			qglGetString ? "" : " glGetString",
+			qglBufferData ? "" : " glBufferData");
 		return 0;
 	}
 
-	vs = malloc (strlen (header) + sizeof(vs_body));
-	fs = malloc (strlen (header) + sizeof(fs_body));
-	if (!vs || !fs)
-		return 0;
-	strcpy (vs, header);
-	strcat (vs, vs_body);
-	strcpy (fs, header);
-	strcat (fs, fs_body);
-	program = rlLoadShaderProgram (vs, fs);
-	free (vs);
-	free (fs);
-	if (!program)
+	program = LoadProgram (header, vs_body, fs_body);
+	postprogram = LoadProgram (header, post_vs_body, post_fs_body);
+	if (!program || !postprogram)
 	{
-		fprintf (stderr, "gl_raylib: couldn't build the shader\n");
+		fprintf (stderr, "gl_raylib: couldn't build the shaders\n");
 		return 0;
 	}
+	loc_postgamma = rlGetLocationUniform (postprogram, "gamma");
+	loc_posttex = rlGetLocationUniform (postprogram, "texture0");
 	loc_mvp = rlGetLocationUniform (program, "mvp");
 	loc_depthrange = rlGetLocationUniform (program, "depthRange");
 	loc_texmode = rlGetLocationUniform (program, "texMode");
 	loc_alpharef = rlGetLocationUniform (program, "alphaRef");
+	loc_rgbscale = rlGetLocationUniform (program, "rgbScale");
 	loc_tex = rlGetLocationUniform (program, "texture0");
 
 	vao = rlLoadVertexArray ();
@@ -1206,6 +1326,7 @@ int RGL_Init (void)
 	// OpenGL's initial state, not rlgl's (which culls back faces)
 	memset (&state, 0, sizeof(state));
 	state.texmode = GL_MODULATE;
+	state.rgbscale = 1;
 	state.blendsrc = GL_ONE;
 	state.blenddst = GL_ZERO;
 	state.depthmask = 1;
@@ -1235,19 +1356,34 @@ void RGL_Shutdown (void)
 	free (convbuf);
 	convbuf = NULL;
 	convsize = 0;
+	FreeFrame ();
 	if (vbo)
 		rlUnloadVertexBuffer (vbo);
 	if (vao)
 		rlUnloadVertexArray (vao);
 	if (program)
 		rlUnloadShaderProgram (program);
-	vbo = vao = program = 0;
+	if (postprogram)
+		rlUnloadShaderProgram (postprogram);
+	vbo = vao = program = postprogram = 0;
 }
 
 void RGL_BeginFrame (int width, int height)
 {
+	static int	noframe;
+
 	fbwidth = width;
 	fbheight = height;
+
+	if (!noframe && (width != fbowidth || height != fboheight)
+		&& !MakeFrame (width, height))
+	{
+		fprintf (stderr, "gl_raylib: no offscreen frame, so no gamma\n");
+		noframe = 1;
+	}
+	if (fbo)
+		rlEnableFramebuffer (fbo);
+	insideframe = 1;
 
 	// raylib may have touched the state between frames
 	appliedvalid = 0;
@@ -1260,9 +1396,31 @@ void RGL_BeginFrame (int width, int height)
 	streamused = 0;
 }
 
-void RGL_EndFrame (void)
+void RGL_EndFrame (float gamma)
 {
+	int		zero = 0;
+
 	Flush ();
+
+	// the frame to the window, through the gamma curve
+	if (fbo)
+	{
+		rlDisableFramebuffer ();
+		rlViewport (0, 0, fbwidth, fbheight);
+		rlDisableDepthTest ();
+		rlDisableColorBlend ();
+		rlDisableBackfaceCulling ();
+		rlEnableShader (postprogram);
+		rlSetUniform (loc_postgamma, &gamma, RL_SHADER_UNIFORM_FLOAT, 1);
+		rlSetUniform (loc_posttex, &zero, RL_SHADER_UNIFORM_INT, 1);
+		rlActiveTextureSlot (0);
+		rlEnableTexture (fbocolor);
+		rlEnableVertexArray (vao);
+		rlDrawVertexArray (0, 3);
+		rlDisableVertexArray ();
+		lastgamma = gamma;
+	}
+	insideframe = 0;
 
 	// leave rlgl the state it expects for its own drawing
 	rlDisableShader ();

@@ -25,3 +25,6 @@ config.cfg
 
 # Browser touch test output (scripts/web_touch.mjs)
 /web-touch/
+
+# Renderer comparison output (scripts/web_renderers.mjs)
+/web-renderers/

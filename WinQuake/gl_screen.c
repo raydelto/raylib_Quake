@@ -82,9 +82,11 @@ int			scr_copyeverything;
 float		scr_con_current;
 float		scr_conlines;		// lines of console to display
 
-float		oldscreensize, oldfov;
+float		oldscreensize, oldfov, oldfov_adapt;
 cvar_t		scr_viewsize = {"viewsize","100", true};
 cvar_t		scr_fov = {"fov","90"};	// 10 - 170
+cvar_t		scr_fov_adapt = {"fov_adapt","1", true};	// fov is the 4:3 horizontal fov
+cvar_t		scr_scale = {"scr_scale","0", true};	// 2D scale, 0 = auto (vid_glraylib.c)
 cvar_t		scr_conspeed = {"scr_conspeed","300"};
 cvar_t		scr_centertime = {"scr_centertime","2"};
 cvar_t		scr_showram = {"showram","1"};
@@ -248,6 +250,29 @@ float CalcFov (float fov_x, float width, float height)
 }
 
 /*
+====================
+AdaptFov
+
+"Hor+", as in screen.c: fov_x is the horizontal fov of a 4:3 screen of
+the same height, so wider screens see more at the sides; narrower ones
+(portrait) keep the 4:3 vertical view and see less at the sides.
+====================
+*/
+static float AdaptFov (float fov_x, int width, int height)
+{
+	double	ratio, a;
+
+	ratio = (width * 3.0) / (height * 4.0);
+	if (ratio == 1.0)
+		return fov_x;
+
+	a = atan (tan (fov_x / 360 * M_PI) * ratio) * 360 / M_PI;
+	if (a > 178)
+		a = 178;
+	return a;
+}
+
+/*
 =================
 SCR_CalcRefdef
 
@@ -330,6 +355,8 @@ static void SCR_CalcRefdef (void)
 		r_refdef.vrect.y = (h - r_refdef.vrect.height)/2;
 
 	r_refdef.fov_x = scr_fov.value;
+	if (scr_fov_adapt.value)
+		r_refdef.fov_x = AdaptFov (r_refdef.fov_x, vid.width, vid.height);
 	r_refdef.fov_y = CalcFov (r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
 
 	scr_vrect = r_refdef.vrect;
@@ -374,6 +401,8 @@ void SCR_Init (void)
 {
 
 	Cvar_RegisterVariable (&scr_fov);
+	Cvar_RegisterVariable (&scr_fov_adapt);
+	Cvar_RegisterVariable (&scr_scale);
 	Cvar_RegisterVariable (&scr_viewsize);
 	Cvar_RegisterVariable (&scr_conspeed);
 	Cvar_RegisterVariable (&scr_showram);
@@ -857,6 +886,12 @@ void SCR_UpdateScreen (void)
 	if (oldfov != scr_fov.value)
 	{
 		oldfov = scr_fov.value;
+		vid.recalc_refdef = true;
+	}
+
+	if (oldfov_adapt != scr_fov_adapt.value)
+	{
+		oldfov_adapt = scr_fov_adapt.value;
 		vid.recalc_refdef = true;
 	}
 

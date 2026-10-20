@@ -164,6 +164,7 @@ typedef void			GLvoid;
 #define GL_CLAMP						0x2900
 #define GL_REPEAT						0x2901
 #define GL_TEXTURE_ENV					0x2300
+#define GL_RGB_SCALE					0x8573	// GL 1.3; here with any env mode
 #define GL_TEXTURE_ENV_MODE				0x2200
 #define GL_MODULATE						0x2100
 #define GL_DECAL						0x2101
@@ -296,11 +297,13 @@ int RGL_Init (void);
 void RGL_Shutdown (void);
 
 // The frame's size in pixels, given by the driver before drawing a frame;
-// glReadPixels flips rows with it. Also restarts the stream buffer.
+// glReadPixels flips rows with it. Also restarts the stream buffer, and
+// points drawing at the offscreen frame (see RGL_EndFrame).
 void RGL_BeginFrame (int width, int height);
 
-// Draws whatever is still batched; call before the buffers are swapped.
-void RGL_EndFrame (void);
+// Draws whatever is still batched and copies the frame to the window
+// through out = in ^ gamma; call before the buffers are swapped.
+void RGL_EndFrame (float gamma);
 
 // Draw calls and vertices since the last call (for r_speeds style stats).
 void RGL_GetStats (int *draws, int *verts);

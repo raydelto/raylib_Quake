@@ -196,6 +196,9 @@ extern	cvar_t	r_speeds;
 extern	cvar_t	r_waterwarp;
 extern	cvar_t	r_fullbright;
 extern	cvar_t	r_lightmap;
+#ifdef GLQUAKE_RAYLIB
+extern	cvar_t	gl_overbright;
+#endif
 extern	cvar_t	r_shadows;
 extern	cvar_t	r_mirroralpha;
 extern	cvar_t	r_wateralpha;

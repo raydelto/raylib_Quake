@@ -138,7 +138,7 @@
     <div id="overlay">
       <div id="panel">
         <h1>raylib Quake</h1>
-        <p>id Software's 1996 <b>Quake</b> engine (the WinQuake software renderer,
+        <p>id Software's 1996 <b>Quake</b> engine (<span class="rname">the WinQuake software renderer</span>,
           released under the GPL) running on <a href="https://www.raylib.com/">raylib</a>
           and WebAssembly, with the free shareware episode <i>Dimension of the Doomed</i>.</p>
         <div id="bar"><div id="fill"></div></div>
@@ -160,7 +160,7 @@
   <section id="about" class="hidden"><div>
   <button id="aboutclose">Close</button>
   <h1>raylib Quake</h1>
-  <p>id Software's 1996 <b>Quake</b> engine (the WinQuake software renderer,
+  <p>id Software's 1996 <b>Quake</b> engine (<span class="rname">the WinQuake software renderer</span>,
     released under the GPL) running on <a href="https://www.raylib.com/">raylib</a>
     and WebAssembly, with the free shareware episode <i>Dimension of the Doomed</i>.</p>
 
@@ -194,6 +194,12 @@
     <code>?args=%2Bvid_maxpixels%20921600</code> for 1280&times;720 worth on a slow
     device). <code>?args=-width%20640%20-height%20480</code> keeps the classic
     640&times;480, scaled to the window.</p>
+  <p class="fine"><code>?renderer=gl</code> plays with id's GLQuake renderer on
+    WebGL 2 instead (smooth textures and lighting, drawn at the window's full
+    size; <code>vid_maxpixels</code> and <code>-width</code>/<code>-height</code>
+    do not apply to it). Settings and saves are shared with the software
+    renderer. <a href="?">Software renderer</a> &middot;
+    <a href="?renderer=gl">GL renderer</a></p>
 
   <h2>Credits and licenses</h2>
   <p>Quake engine © 1996–1997 id Software, Inc., released under the
@@ -781,8 +787,31 @@
     if (running)
       syncFiles();
   });
+  // ?renderer=gl loads GLQuake (quake-gl.js, WebGL 2) instead of the
+  // software renderer (quake.js, the default). Both builds read the same
+  // quake.data (the shareware pak0.pak), so it is downloaded and cached
+  // once. Emscripten's own script tag is kept inert in the template below.
+  var gl = query.get('renderer') === 'gl';
+  Module.locateFile = function (path, prefix) {
+    return prefix + (path === 'quake-gl.data' ? 'quake.data' : path);
+  };
+  if (gl && !document.createElement('canvas').getContext('webgl2')) {
+    failed = true;
+    showOverlay('?renderer=gl needs WebGL 2, which this browser does not '
+                + 'offer. Open the page without it for the software renderer.', true);
+    return;
+  }
+  document.body.classList.toggle('gl', gl);
+  if (gl)
+    document.querySelectorAll('.rname').forEach(function (el) {
+      el.textContent = "id's GLQuake renderer on WebGL 2";
+    });
+  var engine = document.createElement('script');
+  engine.async = true;
+  engine.src = gl ? 'quake-gl.js' : 'quake.js';
+  document.body.appendChild(engine);
 })();
 </script>
-{{{ SCRIPT }}}
+<template id="emscripten-script">{{{ SCRIPT }}}</template>
 </body>
 </html>

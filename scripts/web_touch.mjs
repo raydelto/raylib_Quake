@@ -3,6 +3,7 @@
 //
 //   PLAYWRIGHT=/path/to/node_modules/playwright/index.mjs \
 //     node scripts/web_touch.mjs [BUILD_DIR] [OUT_DIR] [--only pixel7|iphone14|desktop]
+//       [--renderer gl]
 //
 // BUILD_DIR defaults to build-web, OUT_DIR to web-touch. Chromium only:
 // Playwright's Pixel 7 and iPhone 14 emulation (landscape viewport, user
@@ -20,7 +21,8 @@
 // is read from the save files (origin, view angles, shells, weapon).
 // Desktop: no overlay, keyboard play, pointer lock on a click, the mouse
 // looks and fires; ?touch=1 forces the overlay. Any page or console error
-// fails the run. Page screenshots go to OUT_DIR.
+// fails the run. Page screenshots go to OUT_DIR. --renderer gl runs it all
+// on the GLQuake build (?renderer=gl, QUAK-45).
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -39,6 +41,7 @@ const flag = (name, def) => {
   return v;
 };
 const only = flag('--only', null);
+const renderer = flag('--renderer', null);
 const buildDir = resolve(args[0] || 'build-web');
 const outDir = resolve(args[1] || 'web-touch');
 mkdirSync(outDir, { recursive: true });
@@ -99,7 +102,8 @@ class Page {
     for (let i = 0; i < 50; i++) {
       try { await fetch(base); break; } catch { await sleep(100); }
     }
-    await page.goto(base + (query ? '?' + query : ''));
+    const q = [renderer ? `renderer=${renderer}` : '', query || ''].filter(Boolean).join('&');
+    await page.goto(base + (q ? '?' + q : ''));
     await page.waitForSelector('#play:not([disabled])', { timeout: 60000 });
     return p;
   }
