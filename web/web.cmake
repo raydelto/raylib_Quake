@@ -68,3 +68,51 @@ add_custom_command(TARGET quake POST_BUILD
     $<TARGET_FILE:quake> $<TARGET_FILE_DIR:quake>/index.html
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_SOURCE_DIR}/web/htaccess $<TARGET_FILE_DIR:quake>/.htaccess)
+
+# ---------------------------------------------------------------------------
+# quake-gl: GLQuake on WebGL 2 (quake-gl.js, quake-gl.wasm). The page loads
+# it instead of quake.js for ?renderer=gl. It needs raylib built for OpenGL
+# ES 3 (WebGL 2) while `quake` keeps raylib's default ES 2 (WebGL 1), so
+# raylib's sources are compiled a second time here as raylib_es3.
+if(QUAKE_GL)
+  if(NOT raylib_SOURCE_DIR)
+    message(FATAL_ERROR "The browser quake-gl needs raylib's sources "
+      "(the downloaded raylib, or FETCHCONTENT_SOURCE_DIR_RAYLIB)")
+  endif()
+  set(RAYLIB_ES3_SOURCES rcore.c rshapes.c rtextures.c rtext.c rmodels.c raudio.c)
+  list(TRANSFORM RAYLIB_ES3_SOURCES PREPEND ${raylib_SOURCE_DIR}/src/)
+  add_library(raylib_es3 STATIC ${RAYLIB_ES3_SOURCES})
+  target_include_directories(raylib_es3 PUBLIC ${raylib_SOURCE_DIR}/src)
+  target_compile_definitions(raylib_es3
+    PUBLIC PLATFORM_WEB GRAPHICS_API_OPENGL_ES3
+    PRIVATE SUPPORT_SCREEN_CAPTURE=0)
+  target_compile_options(raylib_es3 PRIVATE -w)
+  target_link_options(raylib_es3 PUBLIC -sUSE_GLFW=3
+    -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2
+    # gl_raylib.c gets four GL entry points from rlGetProcAddress
+    -sGL_ENABLE_GET_PROC_ADDRESS=1)
+
+  set_target_properties(quake-gl PROPERTIES
+    SUFFIX .js
+    LINK_DEPENDS "${QUAKE_WEB_PAK}")
+  # As for quake, but no shell (the page is quake.html) and a smaller stack:
+  # GLQuake has no edge lists on it.
+  target_link_options(quake-gl PRIVATE
+    -sINITIAL_MEMORY=64MB
+    -sALLOW_MEMORY_GROWTH=1
+    -sSTACK_SIZE=1MB
+    -sENVIRONMENT=web
+    -sINVOKE_RUN=0
+    -lidbfs.js
+    --preload-file ${QUAKE_WEB_PAK}@/quake/id1/pak0.pak)
+  target_link_libraries(quake-gl PRIVATE raylib_es3 m
+    -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,addRunDependency,removeRunDependency,HEAPF32)
+
+  # quake-gl.data is the same package as quake.data (one file at the same
+  # path); the page fetches quake.data for both, so a browser downloads and
+  # caches the PAK once. Check that it really is the same.
+  add_custom_command(TARGET quake-gl POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E compare_files
+      $<TARGET_FILE_DIR:quake-gl>/quake-gl.data $<TARGET_FILE_DIR:quake>/quake.data)
+  add_dependencies(quake-gl quake)
+endif()

@@ -288,9 +288,27 @@ void RL_Present (const unsigned *rgba, int integer, int linear)
 
 void RL_BeginGLFrame (int *width, int *height)
 {
+#ifdef __EMSCRIPTEN__
+	int		size, cw, ch;
+
+	// GLQuake draws straight into the canvas, so its backing store is kept
+	// at the size the page shows it at, in device pixels (see WebPresent).
+	size = WebDrawableSize ();
+	emscripten_get_canvas_element_size ("#canvas", &cw, &ch);
+	if (size && ((size >> 16) != cw || (size & 0xffff) != ch))
+	{
+		cw = size >> 16;
+		ch = size & 0xffff;
+		emscripten_set_canvas_element_size ("#canvas", cw, ch);
+	}
+	BeginDrawing ();
+	*width = cw;
+	*height = ch;
+#else
 	BeginDrawing ();
 	*width = GetRenderWidth ();
 	*height = GetRenderHeight ();
+#endif
 }
 
 void RL_EndGLFrame (void)

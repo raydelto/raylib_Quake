@@ -33,7 +33,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # The browser build (emcmake cmake -B build-web, see web/web.cmake) makes
-# only `quake`, with raylib's web platform; it needs QUAKE_RAYLIB.
+# `quake` and `quake-gl`, with raylib's web platform; it needs QUAKE_RAYLIB.
 if(EMSCRIPTEN AND NOT QUAKE_RAYLIB)
   message(FATAL_ERROR "The browser build needs QUAKE_RAYLIB=ON")
 endif()
@@ -169,13 +169,9 @@ if(QUAKE_RAYLIB)
   quake_compile_settings(quake)
   target_link_libraries(quake PRIVATE raylib m)
 
-  if(EMSCRIPTEN)
-    include(web/web.cmake)
-    return()
-  endif()
-
   # GLQuake: the raylib drivers with vid_glraylib.c in place of
   # vid_raylib.c. gl_raylib.c includes raylib's rlgl.h (not raylib.h).
+  # In the browser build it is quake-gl.js (WebGL 2), see web/web.cmake.
   option(QUAKE_GL "Build quake-gl, GLQuake on raylib's rlgl" ON)
   if(QUAKE_GL)
     set(QUAKE_GL_SOURCES ${QUAKE_GL_CORE_SOURCES} ${QUAKE_RAYLIB_DRIVER_SOURCES}
@@ -191,7 +187,14 @@ if(QUAKE_RAYLIB)
         -Wno-unused-variable -Wno-unused-but-set-variable
         -Wno-unknown-pragmas)
     endif()
-    target_link_libraries(quake-gl PRIVATE raylib m)
+    if(NOT EMSCRIPTEN)
+      target_link_libraries(quake-gl PRIVATE raylib m)
+    endif()
+  endif()
+
+  if(EMSCRIPTEN)
+    include(web/web.cmake)
+    return()
   endif()
 
   set(QUAKE_NULL_TARGET quake-null)

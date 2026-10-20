@@ -201,6 +201,9 @@ void R_Init (void)
 	Cvar_RegisterVariable (&gl_affinemodels);
 	Cvar_RegisterVariable (&gl_polyblend);
 	Cvar_RegisterVariable (&gl_flashblend);
+#ifdef GLQUAKE_RAYLIB
+	Cvar_RegisterVariable (&gl_overbright);
+#endif
 	Cvar_RegisterVariable (&gl_playermip);
 	Cvar_RegisterVariable (&gl_nocolors);
 

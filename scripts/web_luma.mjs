@@ -2,6 +2,7 @@
 //
 //   PLAYWRIGHT=/path/to/node_modules/playwright/index.mjs \
 //     node scripts/web_luma.mjs [BUILD_DIR] [OUT_DIR] [--args "+gamma 0.8"]
+//       [--renderer gl]
 //
 // BUILD_DIR defaults to build-web, OUT_DIR to web-luma. For 1280x720,
 // 1920x1080 and Playwright's Pixel 7 / iPhone 14 (landscape) emulation it
@@ -10,7 +11,8 @@
 // canvas less its top 6% (notify lines) and bottom 12% (status bar), the
 // average of three captures. It also saves the page, the main menu over the
 // game (Draw_FadeScreen) and, at 1920x1080, the E1M1 spawn. --args adds
-// command-line options, e.g. to try a gamma value on an unchanged build.
+// command-line options, e.g. to try a gamma value on an unchanged build;
+// --renderer gl measures the GLQuake build (?renderer=gl).
 // Results go to OUT_DIR/luma.json.
 
 import { spawn } from 'node:child_process';
@@ -30,6 +32,7 @@ const flag = (name, def) => {
   return v;
 };
 const extra = flag('--args', '');
+const renderer = flag('--renderer', null);
 const buildDir = resolve(args[0] || 'build-web');
 const outDir = resolve(args[1] || 'web-luma');
 mkdirSync(outDir, { recursive: true });
@@ -80,7 +83,7 @@ async function view(key, contextOpts, extraShots) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`[${key}] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[${key}] ${e.name}: ${e.message}`));
   const q = encodeURIComponent(`${extra} +map start`.trim());
-  await page.goto(`${base}?args=${q}`);
+  await page.goto(`${base}?${renderer ? `renderer=${renderer}&` : ''}args=${q}`);
   await page.waitForSelector('#play:not([disabled])', { timeout: 60000 });
   await page.click('#play');
   await page.waitForFunction(() => Module.quakePlaying === 1, null, { timeout: 40000 });

@@ -81,7 +81,7 @@ cvar_t	r_fullbright = {"r_fullbright","0"};
 cvar_t	r_lightmap = {"r_lightmap","0"};
 cvar_t	r_shadows = {"r_shadows","0"};
 cvar_t	r_mirroralpha = {"r_mirroralpha","1"};
-cvar_t	r_wateralpha = {"r_wateralpha","1"};
+cvar_t	r_wateralpha = {"r_wateralpha","1", true};
 cvar_t	r_dynamic = {"r_dynamic","1"};
 cvar_t	r_novis = {"r_novis","0"};
 
@@ -92,10 +92,22 @@ cvar_t	gl_texsort = {"gl_texsort","1"};
 cvar_t	gl_smoothmodels = {"gl_smoothmodels","1"};
 cvar_t	gl_affinemodels = {"gl_affinemodels","0"};
 cvar_t	gl_polyblend = {"gl_polyblend","1"};
+#ifdef GLQUAKE_RAYLIB
+// Dynamic lights (rockets, explosions, the muzzle flash) light the walls
+// through the lightmaps, as in the software renderer, instead of 1997's
+// glow balls: lightmap updates cost nothing on today's GPUs.
+cvar_t	gl_flashblend = {"gl_flashblend","0", true};
+#else
 cvar_t	gl_flashblend = {"gl_flashblend","1"};
+#endif
 cvar_t	gl_playermip = {"gl_playermip","0"};
 cvar_t	gl_nocolors = {"gl_nocolors","0"};
+#ifdef GLQUAKE_RAYLIB
+// keep the T-junction vertices: no sparkling cracks between polygons
+cvar_t	gl_keeptjunctions = {"gl_keeptjunctions","1"};
+#else
 cvar_t	gl_keeptjunctions = {"gl_keeptjunctions","0"};
+#endif
 cvar_t	gl_reporttjunctions = {"gl_reporttjunctions","0"};
 cvar_t	gl_doubleeyes = {"gl_doubleeys", "1"};
 
@@ -456,6 +468,9 @@ void R_DrawAliasModel (entity_t *e)
 	int			index;
 	float		s, t, an;
 	int			anim;
+#ifdef GLQUAKE_RAYLIB
+	qboolean	overbright;
+#endif
 
 	clmodel = currententity->model;
 
@@ -509,11 +524,28 @@ void R_DrawAliasModel (entity_t *e)
 			ambientlight = shadelight = 8;
 
 	// HACK HACK HACK -- no fullbright colors, so make torches full light
+#ifdef GLQUAKE_RAYLIB
+	overbright = gl_overbright.value != 0;
+#endif
 	if (!strcmp (clmodel->name, "progs/flame2.mdl")
 		|| !strcmp (clmodel->name, "progs/flame.mdl") )
+	{
 		ambientlight = shadelight = 256;
+#ifdef GLQUAKE_RAYLIB
+		overbright = false;		// their own colours, not twice them
+#endif
+	}
 
 	shadedots = r_avertexnormal_dots[((int)(e->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1)];
+#ifdef GLQUAKE_RAYLIB
+	// Overbright, as the software renderer lights models: up to twice the
+	// skin's own colour, drawn at half and doubled by GL_RGB_SCALE
+	// (gl_raylib.c). /128 matches the software renderer's brightness (the
+	// crucified zombies in start.bsp were near black with /200).
+	if (overbright)
+		shadelight = shadelight / 128.0;
+	else
+#endif
 	shadelight = shadelight / 200.0;
 	
 	an = e->angles[1]/180*M_PI;
@@ -566,7 +598,14 @@ void R_DrawAliasModel (entity_t *e)
 	if (gl_affinemodels.value)
 		glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
 
+#ifdef GLQUAKE_RAYLIB
+	if (overbright)
+		glTexEnvf (GL_TEXTURE_ENV, GL_RGB_SCALE, 2);
+#endif
 	R_SetupAliasFrame (currententity->frame, paliashdr);
+#ifdef GLQUAKE_RAYLIB
+	glTexEnvf (GL_TEXTURE_ENV, GL_RGB_SCALE, 1);
+#endif
 
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 

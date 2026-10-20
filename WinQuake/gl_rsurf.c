@@ -30,6 +30,18 @@ int			skytexturenum;
 
 int		lightmap_bytes;		// 1, 2, or 4
 
+#ifdef GLQUAKE_RAYLIB
+// Overbright lightmaps: light runs up to twice the texture's own colour,
+// as in the software renderer (its colormap goes past full brightness),
+// instead of stopping at it. The lightmaps hold light / 2, not inverted,
+// and are drawn with a 2x modulate blend (dst*src + src*dst). Read when a
+// map's lightmaps are built (GL_BuildLightmaps), so they always agree.
+cvar_t	gl_overbright = {"gl_overbright", "1", true};
+static qboolean	lightmap_overbright;
+#else
+#define	lightmap_overbright	false
+#endif
+
 int		lightmap_textures;
 
 unsigned		blocklights[18*18];
@@ -205,6 +217,21 @@ store:
 	case GL_LUMINANCE:
 	case GL_INTENSITY:
 		bl = blocklights;
+		if (lightmap_overbright && gl_lightmap_format == GL_LUMINANCE)
+		{
+			for (i=0 ; i<tmax ; i++, dest += stride)
+			{
+				for (j=0 ; j<smax ; j++)
+				{
+					t = *bl++;
+					t >>= 8;
+					if (t > 255)
+						t = 255;
+					dest[j] = t;
+				}
+			}
+			break;
+		}
 		for (i=0 ; i<tmax ; i++, dest += stride)
 		{
 			for (j=0 ; j<smax ; j++)
@@ -678,7 +705,9 @@ void R_BlendLightmaps (void)
 
 	glDepthMask (0);		// don't bother writing Z
 
-	if (gl_lightmap_format == GL_LUMINANCE)
+	if (lightmap_overbright && gl_lightmap_format == GL_LUMINANCE)
+		glBlendFunc (GL_DST_COLOR, GL_SRC_COLOR);	// 2 * texture * light
+	else if (gl_lightmap_format == GL_LUMINANCE)
 		glBlendFunc (GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
 	else if (gl_lightmap_format == GL_INTENSITY)
 	{
@@ -1611,6 +1640,10 @@ void GL_BuildLightmaps (void)
 		lightmap_textures = texture_extension_number;
 		texture_extension_number += MAX_LIGHTMAPS;
 	}
+
+#ifdef GLQUAKE_RAYLIB
+	lightmap_overbright = gl_overbright.value != 0;
+#endif
 
 	gl_lightmap_format = GL_LUMINANCE;
 	// default differently on the Permedia

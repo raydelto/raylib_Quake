@@ -22,10 +22,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // The window, input and clock are the software build's (bridge_raylib.c,
 // in_raylib.c, sys_raylib.c); GLQuake draws through gl_raylib.c.
 //
-// GLQuake renders at the window's real size. The 2D layer (console, menus,
-// status bar) is laid out in a virtual vid.width x vid.height screen that
-// the hardware scales: its width is -conwidth (640 by default) and its
-// height follows the window's shape, so pixels stay square in 2D and 3D.
+// GLQuake renders at the window's real size (in the browser, the canvas's
+// size in device pixels). The 2D layer (console, menus, status bar) is laid
+// out in a virtual vid.width x vid.height screen that the hardware scales
+// by a whole number, so its pixels stay square and sharp: the scale is
+// scr_scale (0, the default, picks it as the software build does: 1 at
+// 640x480, 2 at 1280x720, 3 at 1920x1080). -conwidth fixes the 2D width
+// instead, and -conheight its height.
 
 #include "quakedef.h"		// with glquake.h, for GLQUAKE
 #include "bridge_raylib.h"
@@ -58,8 +61,9 @@ cvar_t	vid_fullscreen = {"vid_fullscreen", "0"};	// not saved: -fullscreen or Al
 cvar_t	vid_vsync = {"vid_vsync", "1", true};
 
 static int		scr_width, scr_height;		// the window, in pixels
+static int		fixedconwidth;				// -conwidth
 static int		fixedconheight;				// -conheight
-static float	vid_gamma = 1.0;
+static float	vid_gamma = 0.7;		// -gamma: the display curve
 
 void D_BeginDirectRect (int x, int y, byte *pbitmap, int width, int height)
 {
@@ -97,34 +101,20 @@ qboolean VID_Is8bit (void)
 	return false;
 }
 
-// Brightens the palette the textures are made from, as GLQuake did on
-// every card but a 3Dfx: -gamma, 0.7 by default. 1 keeps the software
-// renderer's colours.
-static void Check_Gamma (unsigned char *pal)
+// The picture is shown through out = in ^ (-gamma x the gamma cvar), on the
+// finished frame (gl_raylib.c), as the software build's palette does it.
+// -gamma is 0.7 by default: what GLQuake used on every card but a 3Dfx
+// (it brightened the textures with it) and what the browser's software
+// build puts on top of the gamma cvar (VID_DISPLAY_GAMMA). The gamma cvar
+// is the Brightness slider; 1 by default.
+static void Check_Gamma (void)
 {
-	float	f, inf;
-	unsigned char	palette[768];
 	int		i;
 
 	if ((i = COM_CheckParm ("-gamma")) != 0 && i < com_argc - 1)
 		vid_gamma = Q_atof (com_argv[i+1]);
-	else
-		vid_gamma = 0.7;
 	if (vid_gamma <= 0)
 		vid_gamma = 1;
-
-	for (i = 0; i < 768; i++)
-	{
-		f = pow ((pal[i] + 1) / 256.0, vid_gamma);
-		inf = f * 255 + 0.5;
-		if (inf < 0)
-			inf = 0;
-		if (inf > 255)
-			inf = 255;
-		palette[i] = inf;
-	}
-
-	memcpy (pal, palette, sizeof(palette));
 }
 
 void GL_Init (void)
@@ -157,18 +147,57 @@ void GL_Init (void)
 	glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 }
 
-// Keeps the 2D screen's height in step with the window's shape.
+// The whole-number 2D scale for a width x height window: scr_scale, or
+// for 0 the software build's rule (SCR_Update2DScale in screen.c), at most
+// what leaves the 320x200 the menus need.
+static int VID_2DScale (int width, int height)
+{
+	int		scale, maxscale, size;
+
+	maxscale = width / 320;
+	if (height / 200 < maxscale)
+		maxscale = height / 200;
+	if (maxscale < 1)
+		maxscale = 1;
+
+	if (scr_scale.value >= 1)
+		scale = (int)scr_scale.value;
+	else
+	{
+		size = width;
+		if (height * 16 / 9 < size)
+			size = height * 16 / 9;
+		scale = (size + 320) / 640;
+	}
+	if (scale > maxscale)
+		scale = maxscale;
+	if (scale < 1)
+		scale = 1;
+	return scale;
+}
+
+// Keeps the 2D screen in step with the window's size and scr_scale.
 static void VID_SetConsoleSize (int width, int height)
 {
-	int		conheight;
+	int		scale, conwidth, conheight;
 
+	scale = VID_2DScale (width, height);
+	conwidth = fixedconwidth ? (int)vid.conwidth : width / scale;
 	if (fixedconheight)
-		return;
-	conheight = (int)((float)vid.conwidth * height / width + 0.5f);
+		conheight = vid.conheight;
+	else if (fixedconwidth)
+		conheight = (int)((float)conwidth * height / width + 0.5f);
+	else
+		conheight = height / scale;
+	if (conwidth < 320)
+		conwidth = 320;
 	if (conheight < 200)
 		conheight = 200;
-	if (conheight == (int)vid.conheight)
+	if (conwidth == (int)vid.conwidth && conheight == (int)vid.conheight)
 		return;
+	if (vid.conheight && scr_con_current)
+		scr_con_current = scr_con_current * conheight / vid.conheight;
+	vid.width = vid.conwidth = conwidth;
 	vid.height = vid.conheight = conheight;
 	vid.recalc_refdef = 1;
 }
@@ -197,6 +226,19 @@ static void VID_CheckCvars (void)
 	RL_SetVsync (vid_vsync.value && !cls.timedemo);
 }
 
+static int		shownwidth, shownheight;	// the size last printed
+static double	sizetime;					// when the size last changed
+
+static void VID_ShowMode (void)
+{
+	int		dw, dh;
+
+	Con_SafePrintf ("Video mode %dx%d, %s %dx%d, 2D %dx%d\n",
+		scr_width, scr_height,
+		RL_GetDrawableSize (&dw, &dh) ? "canvas" : "window",
+		scr_width, scr_height, vid.conwidth, vid.conheight);
+}
+
 void GL_BeginRendering (int *x, int *y, int *width, int *height)
 {
 	int		w, h;
@@ -212,9 +254,26 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	{
 		scr_width = w;
 		scr_height = h;
-		VID_SetConsoleSize (w, h);
+		sizetime = Sys_FloatTime ();
+	}
+	VID_SetConsoleSize (w, h);	// scr_scale can change too
+
+	// Say so once a new size has held for a moment (not on every frame of
+	// a window being dragged).
+	if ((w != shownwidth || h != shownheight)
+		&& Sys_FloatTime () - sizetime >= 0.25)
+	{
+		shownwidth = w;
+		shownheight = h;
+		VID_ShowMode ();
 	}
 	RGL_BeginFrame (w, h);
+
+	// GLQuake drew the status bar into vid.numpages buffers and then let
+	// it be, as 1997 swaps kept the back buffers. Today's (a browser's
+	// WebGL canvas, most compositors) leave the back buffer undefined, so
+	// it is drawn every frame.
+	Sbar_Changed ();
 
 	*x = *y = 0;
 	*width = scr_width;
@@ -223,7 +282,12 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 
 void GL_EndRendering (void)
 {
-	RGL_EndFrame ();
+	float	gamma;
+
+	gamma = vid_gamma * v_gamma.value;
+	if (gamma < 0.1f)
+		gamma = 0.1f;
+	RGL_EndFrame (gamma);
 	RL_EndGLFrame ();	// also polls input, see RL_PumpEvents
 }
 
@@ -250,9 +314,15 @@ void VID_Init (unsigned char *palette)
 	vid.colormap = host_colormap;
 	vid.fullbright = 256 - LittleLong (*((int *)vid.colormap + 2048));
 
-	// -width/-height: the window; it can be resized afterwards
-	width = VID_ParmValue ("-width", DEFAULT_WIDTH);
-	height = VID_ParmValue ("-height", DEFAULT_HEIGHT);
+	// -width/-height: the window; it can be resized afterwards. The
+	// browser's canvas is sized by the page, and frames follow it.
+	if (!RL_GetDrawableSize (&width, &height))
+	{
+		width = DEFAULT_WIDTH;
+		height = DEFAULT_HEIGHT;
+	}
+	width = VID_ParmValue ("-width", width);
+	height = VID_ParmValue ("-height", height);
 	if (width < 320)
 		width = 320;
 	if (height < 200)
@@ -262,20 +332,23 @@ void VID_Init (unsigned char *palette)
 	if (COM_CheckParm ("-window"))
 		fullscreen = 0;
 
-	vid.conwidth = VID_ParmValue ("-conwidth", 640);
-	vid.conwidth &= ~7;
-	if (vid.conwidth < 320)
-		vid.conwidth = 320;
-	if (vid.conwidth > width)
-		vid.conwidth = width & ~7;
-	vid.width = vid.conwidth;
-	vid.conheight = 0;
-	VID_SetConsoleSize (width, height);
+	vid.conwidth = vid.conheight = 0;
+	if (COM_CheckParm ("-conwidth"))
+	{
+		vid.conwidth = VID_ParmValue ("-conwidth", 640);
+		vid.conwidth &= ~7;
+		if (vid.conwidth < 320)
+			vid.conwidth = 320;
+		if (vid.conwidth > width)
+			vid.conwidth = width & ~7;
+		fixedconwidth = 1;
+	}
 	if (COM_CheckParm ("-conheight"))
 	{
-		vid.height = vid.conheight = VID_ParmValue ("-conheight", vid.conheight);
+		vid.conheight = VID_ParmValue ("-conheight", 200);
 		fixedconheight = 1;
 	}
+	VID_SetConsoleSize (width, height);
 
 	vid.aspect = ((float)vid.height / (float)vid.width) * (320.0 / 240.0);
 	vid.numpages = 2;
@@ -297,12 +370,13 @@ void VID_Init (unsigned char *palette)
 	Q_snprintf (gldir, sizeof(gldir), "%s/glquake", com_gamedir);
 	Sys_mkdir (gldir);
 
-	Check_Gamma (palette);
+	Check_Gamma ();
 	VID_SetPalette (palette);
 
 	vid.recalc_refdef = 1;
-	Con_SafePrintf ("Video mode %dx%d (%dx%d 2D), gamma %g\n", width, height,
-		vid.conwidth, vid.conheight, vid_gamma);
+	scr_width = shownwidth = width;
+	scr_height = shownheight = height;
+	VID_ShowMode ();
 }
 
 void VID_Shutdown (void)
